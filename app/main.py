@@ -1,3 +1,12 @@
+import threading
+
+def handle_client(connection):
+    while True:
+        connection.sendall(b"+PONG\r\n")
+
+while True:
+    conn, _ = server_socket.accept()
+    threading.Thread(target=handle_client, args=(conn,)).start()
 def parse_resp_command(data):
     parts = data.split(b"\r\n")
     array_len = int(parts[0][1:])
