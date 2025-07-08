@@ -1,23 +1,30 @@
-import socket
-import threading
+def parse_resp_command(data):
+    parts = data.split(b"\r\n")
+    array_len = int(parts[0][1:])
+    elements = []
+    i = 2
+    while len(elements) < array_len:
+        elements.append(parts[i])
+        i += 2
+    return elements
 
 def handle_client(connection):
     while True:
         data = connection.recv(1024)
         if not data:
             break
-        connection.sendall(b"+PONG\r\n")
+
+        command_parts = parse_resp_command(data)
+
+        if len(command_parts) == 1 and command_parts[0].lower() == b"ping":
+            connection.sendall(b"+PONG\r\n")
+        elif len(command_parts) == 2 and command_parts[0].lower() == b"echo":
+            message = command_parts[1]
+            response = b"$" + str(len(message)).encode() + b"\r\n" + message + b"\r\n"
+            connection.sendall(response)
+        else:
+            connection.sendall(b"-Unknown command\r\n")
+
     connection.close()
 
-def main():
-    server_socket = socket.create_server(("localhost", 6379), reuse_port=True)
-    print("Server is running and waiting for clients...")
-
-    while True:
-        client_conn, _ = server_socket.accept()
-        client_thread = threading.Thread(target=handle_client, args=(client_conn,))
-        client_thread.start()
-
-if __name__ == "__main__":
-    main()
 
