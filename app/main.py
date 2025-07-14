@@ -1,108 +1,73 @@
 import socket
-import threading
-import time
+import sys
 
-# Key-value store with expiry support
 store = {}
+config = {
+    "dir": "/tmp",
+    "dbfilename": "dump.rdb"
+}
 
-# Parse RESP into list of strings
-def parse_redis_message(data):
-    try:
-        lines = data.decode().split("\r\n")
-        if lines[0].startswith("*"):
-            count = int(lines[0][1:])
-            args = []
-            i = 1
-            while i < len(lines) and len(args) < count:
-                if lines[i].startswith("$"):
-                    args.append(lines[i + 1])
-                    i += 2
-                else:
-                    i += 1
-            return args
-    except Exception as e:
-        print("Parsing error:", e)
-    return []
+# Parse CLI args
+args = sys.argv
+if "--dir" in args:
+    config["dir"] = args[args.index("--dir") + 1]
+if "--dbfilename" in args:
+    config["dbfilename"] = args[args.index("--dbfilename") + 1]
 
-# Check if a key has expired
-def is_expired(key):
-    if key not in store:
-        return True
-    expires_at = store[key].get("expires_at")
-    if expires_at is None:
-        return False
-    return time.time() * 1000 > expires_at
+def encode_simple_string(s):
+    return f"+{s}\r\n".encode()
 
-# Handle each client in a thread
-def handle_client(connection):
-    try:
-        while True:
-            data = connection.recv(1024)
-            if not data:
-                break
+def encode_bulk_string(s):
+    return f"${len(s)}\r\n{s}\r\n".encode()
 
-            args = parse_redis_message(data)
-            if not args:
-                continue
+def encode_array(arr):
+    result = f"*{len(arr)}\r\n"
+    for item in arr:
+        result += f"${len(item)}\r\n{item}\r\n"
+    return result.encode()
 
-            command = args[0].lower()
+def handle_command(cmd_parts):
+    if not cmd_parts:
+        return encode_simple_string("")
 
-            if command == "ping":
-                connection.sendall(b"+PONG\r\n")
+    cmd = cmd_parts[0].upper()
+    
+    if cmd == "PING":
+        return encode_simple_string("PONG")
+    elif cmd == "ECHO" and len(cmd_parts) > 1:
+        return encode_bulk_string(cmd_parts[1])
+    elif cmd == "SET" and len(cmd_parts) > 2:
+        store[cmd_parts[1]] = cmd_parts[2]
+        return encode_simple_string("OK")
+    elif cmd == "GET" and len(cmd_parts) > 1:
+        val = store.get(cmd_parts[1])
+        return encode_bulk_string(val) if val else b"$-1\r\n"
+    elif cmd == "CONFIG" and len(cmd_parts) > 2 and cmd_parts[1].upper() == "GET":
+        key = cmd_parts[2]
+        if key in config:
+            return encode_array([key, config[key]])
+        else:
+            return encode_array([])
+    else:
+        return encode_simple_string("")
 
-            elif command == "echo" and len(args) > 1:
-                message = args[1]
-                response = f"${len(message)}\r\n{message}\r\n"
-                connection.sendall(response.encode())
+def parse_request(data):
+    lines = data.decode().split("\r\n")
+    return [line for line in lines if line and not line.startswith(("*", "$"))]
 
-            elif command == "set":
-                key = args[1]
-                value = args[2]
-                expires_at = None
-
-                if len(args) > 4 and args[3].lower() == "px":
-                    try:
-                        px = int(args[4])
-                        expires_at = time.time() * 1000 + px
-                    except:
-                        pass  # invalid px value, ignore
-
-                store[key] = {
-                    "value": value,
-                    "expires_at": expires_at
-                }
-                connection.sendall(b"+OK\r\n")
-
-            elif command == "get":
-                key = args[1]
-                if key not in store or is_expired(key):
-                    store.pop(key, None)  # remove expired key
-                    connection.sendall(b"$-1\r\n")
-                else:
-                    value = store[key]["value"]
-                    response = f"${len(value)}\r\n{value}\r\n"
-                    connection.sendall(response.encode())
-
-            else:
-                connection.sendall(b"-Error: Unknown command\r\n")
-
-    except Exception as e:
-        print("Client error:", e)
-    finally:
-        connection.close()
-
-# Start server
-def main():
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind(("localhost", 6379))
+    s.listen()
     print("Server running on localhost:6379")
-    server_socket = socket.create_server(("localhost", 6379), reuse_port=True)
-
     while True:
-        conn, _ = server_socket.accept()
-        thread = threading.Thread(target=handle_client, args=(conn,))
-        thread.start()
-
-if __name__ == "__main__":
-    main()
+        conn, addr = s.accept()
+        with conn:
+            data = conn.recv(1024)
+            if not data:
+                continue
+            cmd_parts = parse_request(data)
+            response = handle_command(cmd_parts)
+            conn.sendall(response)
 
 
 
